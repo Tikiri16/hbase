@@ -115,7 +115,11 @@ module Hbase
 
     # Requests to compact all regions on the regionserver
     def compact_regionserver(servername, major = false)
-      @admin.compactRegionServer(ServerName.valueOf(servername), major)
+      if major
+        @admin.majorCompactRegionServer(ServerName.valueOf(servername))
+      else
+        @admin.compactRegionServer(ServerName.valueOf(servername))
+      end
     end
 
     #----------------------------------------------------------------------------------------------
@@ -327,15 +331,15 @@ module Hbase
     def enable_all(regex)
       pattern = Pattern.compile(regex.to_s)
       failed = java.util.ArrayList.new
-      admin.listTableNames(pattern).each do |table_name|
+      @admin.listTableNames(pattern).each do |table_name|
         begin
-          admin.enableTable(table_name)
+          @admin.enableTable(table_name)
         rescue java.io.IOException => e
           puts "table:#{table_name}, error:#{e.toString}"
           failed.add(table_name)
         end
       end
-      @failed
+      failed
     end
 
     #----------------------------------------------------------------------------------------------
@@ -351,15 +355,15 @@ module Hbase
     def disable_all(regex)
       pattern = Pattern.compile(regex.to_s)
       failed = java.util.ArrayList.new
-      admin.listTableNames(pattern).each do |table_name|
+      @admin.listTableNames(pattern).each do |table_name|
         begin
-          admin.disableTable(table_name)
+          @admin.disableTable(table_name)
         rescue java.io.IOException => e
           puts "table:#{table_name}, error:#{e.toString}"
           failed.add(table_name)
         end
       end
-      @failed
+      failed
     end
 
     #---------------------------------------------------------------------------------------------
@@ -390,15 +394,15 @@ module Hbase
     def drop_all(regex)
       pattern = Pattern.compile(regex.to_s)
       failed = java.util.ArrayList.new
-      admin.listTableNames(pattern).each do |table_name|
+      @admin.listTableNames(pattern).each do |table_name|
         begin
-          admin.deleteTable(table_name)
+          @admin.deleteTable(table_name)
         rescue java.io.IOException => e
           puts puts "table:#{table_name}, error:#{e.toString}"
           failed.add(table_name)
         end
       end
-      @failed
+      failed
     end
 
     #----------------------------------------------------------------------------------------------
@@ -533,9 +537,12 @@ module Hbase
     #----------------------------------------------------------------------------------------------
     # Merge two regions
     def merge_region(region_a_name, region_b_name, force)
-      @admin.mergeRegions(region_a_name.to_java_bytes,
-                          region_b_name.to_java_bytes,
-                          java.lang.Boolean.valueOf(force))
+      @admin.mergeRegionsAsync(
+        region_a_name.to_java_bytes,
+        region_b_name.to_java_bytes,
+        java.lang.Boolean.valueOf(force)
+      )
+      return nil
     end
 
     #----------------------------------------------------------------------------------------------
@@ -611,16 +618,21 @@ module Hbase
       # Table should exist
       raise(ArgumentError, "Can't find a table: #{table_name}") unless exists?(table_name)
 
-      status = Pair.new
       begin
-        status = @admin.getAlterStatus(org.apache.hadoop.hbase.TableName.valueOf(table_name))
-        if status.getSecond != 0
-          puts "#{status.getSecond - status.getFirst}/#{status.getSecond} regions updated."
+        cluster_metrics = @admin.getClusterMetrics
+        table_region_status = cluster_metrics
+                              .getTableRegionStatesCount
+                              .get(org.apache.hadoop.hbase.TableName.valueOf(table_name))
+        if table_region_status.getTotalRegions != 0
+          updated_regions = table_region_status.getTotalRegions -
+                            table_region_status.getRegionsInTransition -
+                            table_region_status.getClosedRegions
+          puts "#{updated_regions}/#{table_region_status.getTotalRegions} regions updated."
         else
           puts 'All regions updated.'
         end
         sleep 1
-      end while !status.nil? && status.getFirst != 0
+      end while !table_region_status.nil? && table_region_status.getRegionsInTransition != 0
       puts 'Done.'
     end
 
